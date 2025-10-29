@@ -3,12 +3,14 @@
 import express from "express";
 import cors from "cors";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import axios, { AxiosInstance } from "axios";
+import { randomUUID } from "crypto";
 
 // Zendesk APIクライアント
 class ZendeskClient {
@@ -297,11 +299,103 @@ async function executeTool(name: string, args: any) {
   }
 }
 
+// MCP Server インスタンスを作成する関数
+function createMCPServer() {
+  const server = new Server(
+    {
+      name: "zendesk-mcp-server",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+
+  // ツール一覧ハンドラー
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return { tools: TOOLS };
+  });
+
+  // ツール実行ハンドラー
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (!zendeskClient) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Error: Zendesk credentials not configured. Please set ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, and ZENDESK_API_TOKEN environment variables.",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    try {
+      const { name, arguments: args } = request.params;
+
+      if (!args) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Error: No arguments provided",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const result = await executeTool(name, args);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  });
+
+  return server;
+}
+
+// セッション管理
+const transports: Record<string, StreamableHTTPServerTransport> = {};
+
+// initializeリクエストかどうかを判定
+function isInitializeRequest(body: any): boolean {
+  return (
+    body &&
+    body.jsonrpc === "2.0" &&
+    body.method === "initialize" &&
+    body.params !== undefined
+  );
+}
+
 // HTTP サーバー設定
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+app.use(
+  cors({
+    origin: "*",
+    exposedHeaders: ["Mcp-Session-Id"],
+  })
+);
 app.use(express.json());
 
 // ヘルスチェック
@@ -311,15 +405,16 @@ app.get("/", (req, res) => {
     version: "1.0.0",
     status: "running",
     credentials_configured: !!zendeskClient,
+    mcp_endpoint: "/mcp",
   });
 });
 
-// ツール一覧
+// ツール一覧（後方互換性）
 app.get("/tools", (req, res) => {
   res.json({ tools: TOOLS });
 });
 
-// ツール実行
+// ツール実行（後方互換性）
 app.post("/tools/:toolName", async (req, res) => {
   try {
     const { toolName } = req.params;
@@ -335,55 +430,67 @@ app.post("/tools/:toolName", async (req, res) => {
   }
 });
 
-// MCP互換エンドポイント（JSON-RPC）
-app.post("/mcp", async (req, res) => {
+// MCP over SSE エンドポイント
+app.all("/mcp", async (req, res) => {
   try {
-    const { method, params, id } = req.body;
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    let transport = sessionId ? transports[sessionId] : undefined;
 
-    if (method === "tools/list") {
-      res.json({
-        jsonrpc: "2.0",
-        id,
-        result: { tools: TOOLS },
-      });
-    } else if (method === "tools/call") {
-      const { name, arguments: args } = params;
-      const result = await executeTool(name, args);
-      res.json({
-        jsonrpc: "2.0",
-        id,
-        result: {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(result, null, 2),
-            },
-          ],
+    // 新しいセッションの初期化
+    if (!transport && req.method === "POST" && isInitializeRequest(req.body)) {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          if (transport) {
+            transports[sid] = transport;
+            console.log(`MCP session initialized: ${sid}`);
+          }
         },
       });
-    } else {
+
+      transport.onclose = () => {
+        if (transport && transport.sessionId) {
+          delete transports[transport.sessionId];
+          console.log(`MCP session closed: ${transport.sessionId}`);
+        }
+      };
+
+      const mcpServer = createMCPServer();
+      await mcpServer.connect(transport);
+    }
+
+    // セッションが見つからない場合
+    if (!transport) {
       res.status(400).json({
         jsonrpc: "2.0",
-        id,
         error: {
-          code: -32601,
-          message: "Method not found",
+          code: -32000,
+          message: "Bad Request: No valid session or initialize request",
         },
+        id: null,
+      });
+      return;
+    }
+
+    // リクエストを処理
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("MCP endpoint error:", error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: error instanceof Error ? error.message : String(error),
+        },
+        id: null,
       });
     }
-  } catch (error) {
-    res.status(500).json({
-      jsonrpc: "2.0",
-      id: req.body.id,
-      error: {
-        code: -32603,
-        message: error instanceof Error ? error.message : String(error),
-      },
-    });
   }
 });
 
 app.listen(PORT, () => {
   console.log(`Zendesk MCP Server listening on port ${PORT}`);
   console.log(`Credentials configured: ${!!zendeskClient}`);
+  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
 });
