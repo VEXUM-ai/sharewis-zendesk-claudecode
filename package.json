@@ -2,7 +2,7 @@
   "name": "zendesk-mcp-server",
   "version": "1.0.0",
   "description": "MCP Server for Zendesk integration",
-  "main": "dist/index.js",
+  "main": "dist/server.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
