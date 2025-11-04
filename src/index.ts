@@ -154,6 +154,7 @@ class ZendeskClient {
   // ヘルプセンター記事を検索
   async searchArticles(query: string, locale: string = "ja") {
     try {
+      // ヘルプセンター記事を検索
       const response = await this.axiosInstance.get("/help_center/articles/search.json", {
         params: {
           query,
@@ -161,31 +162,46 @@ class ZendeskClient {
         },
       });
 
-      // 記事の詳細を取得（本文を含む）
       const results = response.data.results || [];
+
+      if (results.length === 0) {
+        return {
+          results: [],
+          count: 0,
+          page: 1,
+          page_count: 0,
+          message: "検索結果が見つかりませんでした",
+        };
+      }
+
+      // 記事の詳細を取得（本文を含む）
       const articlesWithDetails = await Promise.all(
         results.slice(0, 5).map(async (article: any) => {
           try {
+            // ロケールを含めた正しいエンドポイント
             const detailResponse = await this.axiosInstance.get(
-              `/help_center/articles/${article.id}.json`
+              `/help_center/${locale}/articles/${article.id}.json`
             );
             return {
               id: article.id,
-              title: article.title,
-              url: article.html_url,
-              snippet: article.snippet,
+              title: article.title || detailResponse.data.article.title,
+              url: article.html_url || detailResponse.data.article.html_url,
+              snippet: article.snippet || "",
               body: detailResponse.data.article.body,
               section_id: detailResponse.data.article.section_id,
               created_at: detailResponse.data.article.created_at,
               updated_at: detailResponse.data.article.updated_at,
+              locale: detailResponse.data.article.locale,
             };
-          } catch (error) {
+          } catch (detailError: any) {
+            console.error(`Failed to fetch article ${article.id}:`, detailError.message);
             // 詳細取得に失敗した場合は基本情報のみ返す
             return {
               id: article.id,
               title: article.title,
               url: article.html_url,
               snippet: article.snippet,
+              error: "詳細情報の取得に失敗しました",
             };
           }
         })
@@ -193,35 +209,61 @@ class ZendeskClient {
 
       return {
         results: articlesWithDetails,
-        count: response.data.count,
-        page: response.data.page,
-        page_count: response.data.page_count,
+        count: response.data.count || results.length,
+        page: response.data.page || 1,
+        page_count: response.data.page_count || 1,
       };
-    } catch (error) {
-      console.error("Help Center search error:", error);
-      throw error;
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.message || "不明なエラー";
+      const errorStatus = error.response?.status;
+
+      console.error("Help Center search error:", {
+        message: errorMessage,
+        status: errorStatus,
+        query,
+        locale,
+      });
+
+      // エラーの詳細を返す
+      return {
+        results: [],
+        count: 0,
+        page: 1,
+        page_count: 0,
+        error: `ヘルプセンター検索エラー: ${errorMessage} (ステータス: ${errorStatus})`,
+      };
     }
   }
 
   // ヘルプセンター記事を取得
   async getArticle(articleId: number, locale: string = "ja") {
-    const response = await this.axiosInstance.get(
-      `/help_center/articles/${articleId}.json`
-    );
-    return {
-      article: response.data.article,
-    };
+    try {
+      const response = await this.axiosInstance.get(
+        `/help_center/${locale}/articles/${articleId}.json`
+      );
+      return {
+        article: response.data.article,
+      };
+    } catch (error: any) {
+      console.error(`Failed to fetch article ${articleId}:`, error.message);
+      throw error;
+    }
   }
 
   // ヘルプセンターのセクション内記事一覧を取得
   async getArticlesBySection(sectionId: number, locale: string = "ja") {
-    const response = await this.axiosInstance.get(
-      `/help_center/sections/${sectionId}/articles.json`
-    );
-    return {
-      articles: response.data.articles,
-      count: response.data.count,
-    };
+    try {
+      const response = await this.axiosInstance.get(
+        `/help_center/${locale}/sections/${sectionId}/articles.json`
+      );
+      return {
+        articles: response.data.articles,
+        count: response.data.count,
+      };
+    } catch (error: any) {
+      console.error(`Failed to fetch articles in section ${sectionId}:`, error.message);
+      throw error;
+    }
   }
 }
 
