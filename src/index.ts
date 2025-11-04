@@ -37,10 +37,17 @@ class ZendeskClient {
     return response.data;
   }
 
-  // チケットを取得
+  // チケットを取得（コメント履歴も含む）
   async getTicket(ticketId: number) {
-    const response = await this.axiosInstance.get(`/tickets/${ticketId}.json`);
-    return response.data;
+    const [ticketResponse, commentsResponse] = await Promise.all([
+      this.axiosInstance.get(`/tickets/${ticketId}.json`),
+      this.axiosInstance.get(`/tickets/${ticketId}/comments.json`)
+    ]);
+
+    return {
+      ticket: ticketResponse.data.ticket,
+      comments: commentsResponse.data.comments,
+    };
   }
 
   // チケットを作成
@@ -112,6 +119,33 @@ class ZendeskClient {
   // チケットのコメント一覧を取得
   async getTicketComments(ticketId: number) {
     const response = await this.axiosInstance.get(`/tickets/${ticketId}/comments.json`);
+    return response.data;
+  }
+
+  // ヘルプセンター記事を検索
+  async searchArticles(query: string, locale: string = "ja") {
+    const response = await this.axiosInstance.get("/help_center/articles/search.json", {
+      params: {
+        query,
+        locale,
+      },
+    });
+    return response.data;
+  }
+
+  // ヘルプセンター記事を取得
+  async getArticle(articleId: number, locale: string = "ja") {
+    const response = await this.axiosInstance.get(
+      `/help_center/${locale}/articles/${articleId}.json`
+    );
+    return response.data;
+  }
+
+  // ヘルプセンターのセクション内記事一覧を取得
+  async getArticlesBySection(sectionId: number, locale: string = "ja") {
+    const response = await this.axiosInstance.get(
+      `/help_center/${locale}/sections/${sectionId}/articles.json`
+    );
     return response.data;
   }
 }
@@ -328,6 +362,63 @@ const TOOLS: Tool[] = [
       required: ["org_id"],
     },
   },
+  {
+    name: "search_articles",
+    description: "Search for Help Center articles using a query string. Use this to find relevant knowledge base articles.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query to find articles (e.g., 'CRM integration', 'CSV upload')",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the articles (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_article",
+    description: "Get detailed information about a specific Help Center article by ID",
+    inputSchema: {
+      type: "object",
+      properties: {
+        article_id: {
+          type: "number",
+          description: "The ID of the article to retrieve",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the article (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["article_id"],
+    },
+  },
+  {
+    name: "get_articles_by_section",
+    description: "Get all articles within a specific Help Center section",
+    inputSchema: {
+      type: "object",
+      properties: {
+        section_id: {
+          type: "number",
+          description: "The ID of the section",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the articles (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["section_id"],
+    },
+  },
 ];
 
 // ツール一覧を返す
@@ -492,6 +583,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "get_organization": {
         const result = await zendeskClient.getOrganization(args.org_id as number);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "search_articles": {
+        const result = await zendeskClient.searchArticles(
+          args.query as string,
+          (args.locale as string) || "ja"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "get_article": {
+        const result = await zendeskClient.getArticle(
+          args.article_id as number,
+          (args.locale as string) || "ja"
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      }
+
+      case "get_articles_by_section": {
+        const result = await zendeskClient.getArticlesBySection(
+          args.section_id as number,
+          (args.locale as string) || "ja"
+        );
         return {
           content: [
             {

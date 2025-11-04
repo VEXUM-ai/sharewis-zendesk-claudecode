@@ -12,7 +12,7 @@ Model Context Protocol (MCP) サーバーで、ChatGPTやClaude CodeからZendes
 
 ### チケット管理
 - `search_tickets` - チケットを検索
-- `get_ticket` - チケットの詳細を取得
+- `get_ticket` - チケットの詳細を取得（**コメント履歴も含む**）
 - `create_ticket` - 新規チケットを作成
 - `update_ticket` - チケットを更新
 - `add_comment` - チケットにコメントを追加
@@ -25,6 +25,11 @@ Model Context Protocol (MCP) サーバーで、ChatGPTやClaude CodeからZendes
 ### 組織管理
 - `search_organizations` - 組織を検索
 - `get_organization` - 組織の詳細を取得
+
+### ヘルプセンター（ナレッジベース）
+- `search_articles` - ヘルプセンター記事を検索
+- `get_article` - 特定の記事の詳細を取得
+- `get_articles_by_section` - セクション内の記事一覧を取得
 
 ## デプロイ方法
 
@@ -98,6 +103,16 @@ curl -X POST https://zendesk-mcp-server.onrender.com/tools/create_ticket \
     "subject": "テストチケット",
     "comment": "これはテストです",
     "priority": "high"
+  }'
+```
+
+**ヘルプセンター記事を検索：**
+```bash
+curl -X POST https://zendesk-mcp-server.onrender.com/tools/search_articles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "CRM連携",
+    "locale": "ja"
   }'
 ```
 
@@ -205,6 +220,15 @@ Zendeskで未解決のチケットを検索してください
 チケット番号456に「対応しました」というコメントを追加してください
 ```
 
+### ヘルプセンター記事検索
+```
+CRM連携設定についてのヘルプセンター記事を検索してください
+```
+
+```
+ユーザーのCSV一括登録についての記事を探してください
+```
+
 ## ツール詳細
 
 ### search_tickets
@@ -219,10 +243,14 @@ Zendeskで未解決のチケットを検索してください
 
 ### get_ticket
 
-チケットの詳細情報を取得します。
+チケットの詳細情報を取得します（**コメント履歴も含む**）。
 
 **パラメータ:**
 - `ticket_id` (number): チケットID
+
+**レスポンス:**
+- `ticket`: チケットの基本情報
+- `comments`: チケットの全コメント履歴（時系列順）
 
 ### create_ticket
 
@@ -291,6 +319,48 @@ Zendeskで未解決のチケットを検索してください
 
 **パラメータ:**
 - `org_id` (number): 組織ID
+
+### search_articles
+
+ヘルプセンター記事を検索します。
+
+**パラメータ:**
+- `query` (string): 検索クエリ
+  - 例: `CRM連携`
+  - 例: `CSV一括登録`
+  - 例: `パスワードリセット`
+- `locale` (string, optional): 言語ロケール（デフォルト: `ja`）
+
+**使用例:**
+```
+CRM連携設定についてのヘルプセンター記事を検索してください
+```
+
+### get_article
+
+特定のヘルプセンター記事の詳細を取得します。
+
+**パラメータ:**
+- `article_id` (number): 記事ID
+- `locale` (string, optional): 言語ロケール（デフォルト: `ja`）
+
+**使用例:**
+```
+記事ID 123456789 の内容を取得してください
+```
+
+### get_articles_by_section
+
+特定のセクション内のすべての記事を取得します。
+
+**パラメータ:**
+- `section_id` (number): セクションID
+- `locale` (string, optional): 言語ロケール（デフォルト: `ja`）
+
+**使用例:**
+```
+セクションID 987654321 の記事一覧を表示してください
+```
 
 ## トラブルシューティング
 
