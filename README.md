@@ -6,13 +6,41 @@ Model Context Protocol (MCP) サーバーで、ChatGPTやClaude CodeからZendes
 - **Stdio Mode**: ChatGPT Desktop AppやClaude Codeで使用（ローカル実行）
 - **HTTP Mode**: Render.comなどでホスティングして、HTTP API経由で使用
 
+## 🎯 重要な改善点（v2.0）
+
+### ✅ チケット履歴の完全取得
+- **問題**: 以前は100件までのコメントしか取得できず、長期的なやり取りの履歴が欠落
+- **解決**: ページネーションを実装し、何百件のコメントでも全て取得可能に
+- **効果**: ChatGPTが顧客との完全な会話履歴を考慮して返信を生成できる
+
+### ✅ ヘルプセンター記事の詳細検索
+- **問題**: 記事のタイトルとスニペットのみで、本文が取得できなかった
+- **解決**: 検索結果に記事の全文（HTML）を含めて返すように改善
+- **効果**: ChatGPTがヘルプセンター記事の内容を正確に参照して回答できる
+
+### ✅ エラーハンドリングの強化
+- **問題**: APIエラー時に詳細な情報が返されず、問題の特定が困難
+- **解決**: 包括的なエラーハンドリングとロギングを実装
+- **効果**: エラーが発生しても適切なメッセージを返し、一部失敗しても他の結果は取得可能
+
+### ✅ カスタムドメイン対応
+- **問題**: ZendeskのデフォルトURL（`*.zendesk.com`）が返されるが、実際のHelp Centerはカスタムドメインで公開されている
+- **解決**: 環境変数 `ZENDESK_HELP_CENTER_URL` でカスタムドメインを指定可能に
+- **効果**: 正しい公開URLが返され、リンク切れが解消される
+  - 例: `https://wisdombase.zendesk.com/hc/...` → `https://wisdombase-support.share-wis.com/hc/...`
+
+### ✅ 公開記事のみフィルタリング
+- **問題**: 下書き状態の記事も検索結果に含まれ、アクセスできないリンクが返される
+- **解決**: `draft` フィールドをチェックし、公開されている記事のみ返す
+- **効果**: すべての返却される記事が実際にアクセス可能
+
 ## 機能
 
 このMCPサーバーは、以下のZendesk操作をサポートしています：
 
 ### チケット管理
 - `search_tickets` - チケットを検索
-- `get_ticket` - チケットの詳細を取得
+- `get_ticket` - チケットの詳細を取得（**コメント履歴も含む**）
 - `create_ticket` - 新規チケットを作成
 - `update_ticket` - チケットを更新
 - `add_comment` - チケットにコメントを追加
@@ -25,6 +53,11 @@ Model Context Protocol (MCP) サーバーで、ChatGPTやClaude CodeからZendes
 ### 組織管理
 - `search_organizations` - 組織を検索
 - `get_organization` - 組織の詳細を取得
+
+### ヘルプセンター（ナレッジベース）
+- `search_articles` - ヘルプセンター記事を検索
+- `get_article` - 特定の記事の詳細を取得
+- `get_articles_by_section` - セクション内の記事一覧を取得
 
 ## デプロイ方法
 
@@ -45,9 +78,12 @@ Model Context Protocol (MCP) サーバーで、ChatGPTやClaude CodeからZendes
 
 Render.comのダッシュボードで以下の環境変数を追加：
 
-- `ZENDESK_SUBDOMAIN`: あなたのZendeskサブドメイン（例: `yourcompany`）
+- `ZENDESK_SUBDOMAIN`: あなたのZendeskサブドメイン（例: `yourcompany` または `wisdombase`）
 - `ZENDESK_EMAIL`: Zendeskアカウントのメールアドレス
 - `ZENDESK_API_TOKEN`: ZendeskのAPIトークン
+- `ZENDESK_HELP_CENTER_URL`: **(重要)** カスタムHelp Center URL（例: `https://wisdombase-support.share-wis.com`）
+  - この設定がない場合、デフォルトの `https://{subdomain}.zendesk.com` が使用されます
+  - カスタムドメインでHelp Centerを公開している場合は必ず設定してください
 - `PORT`: `3000`（Renderが自動設定）
 
 #### 3. デプロイ
@@ -98,6 +134,16 @@ curl -X POST https://zendesk-mcp-server.onrender.com/tools/create_ticket \
     "subject": "テストチケット",
     "comment": "これはテストです",
     "priority": "high"
+  }'
+```
+
+**ヘルプセンター記事を検索：**
+```bash
+curl -X POST https://zendesk-mcp-server.onrender.com/tools/search_articles \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "CRM連携",
+    "locale": "ja"
   }'
 ```
 
@@ -153,14 +199,17 @@ ChatGPT Desktop Appの設定ファイルを編集します。
         "/path/to/zendesk-claudecode/dist/index.js"
       ],
       "env": {
-        "ZENDESK_SUBDOMAIN": "yourcompany",
+        "ZENDESK_SUBDOMAIN": "wisdombase",
         "ZENDESK_EMAIL": "your-email@example.com",
-        "ZENDESK_API_TOKEN": "your-api-token-here"
+        "ZENDESK_API_TOKEN": "your-api-token-here",
+        "ZENDESK_HELP_CENTER_URL": "https://wisdombase-support.share-wis.com"
       }
     }
   }
 }
 ```
+
+**重要:** `ZENDESK_HELP_CENTER_URL` は、カスタムドメインでHelp Centerを公開している場合に設定してください。設定することで、正しい公開URLが返されます。
 
 ### 4. ChatGPTを再起動
 
@@ -205,6 +254,15 @@ Zendeskで未解決のチケットを検索してください
 チケット番号456に「対応しました」というコメントを追加してください
 ```
 
+### ヘルプセンター記事検索
+```
+CRM連携設定についてのヘルプセンター記事を検索してください
+```
+
+```
+ユーザーのCSV一括登録についての記事を探してください
+```
+
 ## ツール詳細
 
 ### search_tickets
@@ -219,10 +277,20 @@ Zendeskで未解決のチケットを検索してください
 
 ### get_ticket
 
-チケットの詳細情報を取得します。
+チケットの詳細情報を取得します（**コメント履歴も含む**）。
+
+**重要な改善点:**
+- ✅ **ページネーション対応**: 100件を超えるコメントも全て取得
+- ✅ **完全な会話履歴**: チケットの最初から最新まで全てのやり取りを含む
+- ✅ **時系列順**: 古い順から新しい順にソート
 
 **パラメータ:**
 - `ticket_id` (number): チケットID
+
+**レスポンス:**
+- `ticket`: チケットの基本情報
+- `comments`: チケットの全コメント履歴（時系列順、全ページ）
+- `total_comments`: コメントの総数
 
 ### create_ticket
 
@@ -292,6 +360,67 @@ Zendeskで未解決のチケットを検索してください
 **パラメータ:**
 - `org_id` (number): 組織ID
 
+### search_articles
+
+ヘルプセンター記事を検索します。
+
+**重要な改善点:**
+- ✅ **記事本文も含む**: タイトルだけでなく、記事の全文コンテンツも取得
+- ✅ **詳細情報**: スニペット、URL、セクションID、更新日時などを含む
+- ✅ **エラーハンドリング**: 一部の記事取得に失敗しても、他の結果は返す
+
+**パラメータ:**
+- `query` (string): 検索クエリ
+  - 例: `CRM連携`
+  - 例: `CSV一括登録`
+  - 例: `パスワードリセット`
+- `locale` (string, optional): 言語ロケール（デフォルト: `ja`）
+
+**レスポンス:**
+- `results`: 記事の配列（最大5件、各記事に本文を含む）
+  - `id`: 記事ID
+  - `title`: 記事タイトル
+  - `body`: 記事の全文（HTML）
+  - `url`: 記事のURL
+  - `snippet`: 検索結果のスニペット
+  - `section_id`: セクションID
+  - `created_at`: 作成日時
+  - `updated_at`: 更新日時
+- `count`: 検索結果の総数
+- `page`: 現在のページ
+- `page_count`: 総ページ数
+
+**使用例:**
+```
+CRM連携設定についてのヘルプセンター記事を検索してください
+```
+
+### get_article
+
+特定のヘルプセンター記事の詳細を取得します。
+
+**パラメータ:**
+- `article_id` (number): 記事ID
+- `locale` (string, optional): 言語ロケール（デフォルト: `ja`）
+
+**使用例:**
+```
+記事ID 123456789 の内容を取得してください
+```
+
+### get_articles_by_section
+
+特定のセクション内のすべての記事を取得します。
+
+**パラメータ:**
+- `section_id` (number): セクションID
+- `locale` (string, optional): 言語ロケール（デフォルト: `ja`）
+
+**使用例:**
+```
+セクションID 987654321 の記事一覧を表示してください
+```
+
 ## トラブルシューティング
 
 ### 認証エラーが発生する場合
@@ -306,6 +435,29 @@ Zendeskで未解決のチケットを検索してください
 1. ChatGPT Desktop Appを完全に再起動
 2. `mcp_config.json`のパスが正しいか確認
 3. コンソールでエラーが出ていないか確認
+
+### ヘルプセンター記事が検索できない場合
+
+1. **Zendesk Help Centerが有効か確認**
+   - Zendesk管理センター > ガイド > ヘルプセンター
+   - ヘルプセンターが公開されているか確認
+
+2. **記事が公開されているか確認**
+   - 下書き状態の記事は検索結果に含まれません
+   - 記事の公開状態を確認してください
+
+3. **ロケール（言語）が正しいか確認**
+   - デフォルトは `ja`（日本語）
+   - 記事が別の言語で公開されている場合は、`locale` パラメータを指定
+
+4. **APIエラーの詳細を確認**
+   - エラーレスポンスに詳細なエラーメッセージが含まれています
+   - ステータスコードとエラーメッセージを確認してください
+
+**エラー例とその対処法:**
+- `404 Not Found`: 記事が存在しないか、指定したロケールに記事が無い
+- `403 Forbidden`: APIトークンの権限不足、Help Centerへのアクセス権限を確認
+- `401 Unauthorized`: 認証情報が正しくない
 
 ## ライセンス
 

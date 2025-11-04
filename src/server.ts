@@ -16,9 +16,11 @@ import { randomUUID } from "crypto";
 class ZendeskClient {
   private axiosInstance: AxiosInstance;
   private subdomain: string;
+  private helpCenterUrl: string | null;
 
-  constructor(subdomain: string, email: string, apiToken: string) {
+  constructor(subdomain: string, email: string, apiToken: string, helpCenterUrl?: string) {
     this.subdomain = subdomain;
+    this.helpCenterUrl = helpCenterUrl || null;
     const auth = Buffer.from(`${email}/token:${apiToken}`).toString("base64");
 
     this.axiosInstance = axios.create({
@@ -30,6 +32,16 @@ class ZendeskClient {
     });
   }
 
+  // Zendesk URLをカスタムHelp Center URLに変換
+  private convertToCustomUrl(zendeskUrl: string): string {
+    if (!this.helpCenterUrl) {
+      return zendeskUrl;
+    }
+    // https://subdomain.zendesk.com/hc/... を カスタムURLに置き換え
+    const urlPattern = new RegExp(`https://${this.subdomain}\\.zendesk\\.com/hc/`, 'g');
+    return zendeskUrl.replace(urlPattern, `${this.helpCenterUrl}/hc/`);
+  }
+
   async searchTickets(query: string) {
     const response = await this.axiosInstance.get("/search.json", {
       params: { query: `type:ticket ${query}` },
@@ -38,8 +50,27 @@ class ZendeskClient {
   }
 
   async getTicket(ticketId: number) {
-    const response = await this.axiosInstance.get(`/tickets/${ticketId}.json`);
-    return response.data;
+    const ticketResponse = await this.axiosInstance.get(`/tickets/${ticketId}.json`);
+
+    // 全コメントを取得（ページネーション対応）
+    const allComments: any[] = [];
+    let nextPageUrl: string | null = `/tickets/${ticketId}/comments.json?sort_order=asc`;
+
+    while (nextPageUrl) {
+      const commentsResponse: any = await this.axiosInstance.get(nextPageUrl);
+      allComments.push(...commentsResponse.data.comments);
+
+      nextPageUrl = commentsResponse.data.next_page;
+      if (nextPageUrl) {
+        nextPageUrl = nextPageUrl.replace(this.axiosInstance.defaults.baseURL || '', '');
+      }
+    }
+
+    return {
+      ticket: ticketResponse.data.ticket,
+      comments: allComments,
+      total_comments: allComments.length,
+    };
   }
 
   async createTicket(subject: string, comment: string, priority?: string, tags?: string[]) {
@@ -95,8 +126,156 @@ class ZendeskClient {
   }
 
   async getTicketComments(ticketId: number) {
-    const response = await this.axiosInstance.get(`/tickets/${ticketId}/comments.json`);
-    return response.data;
+    const allComments: any[] = [];
+    let nextPageUrl: string | null = `/tickets/${ticketId}/comments.json?sort_order=asc`;
+
+    while (nextPageUrl) {
+      const response: any = await this.axiosInstance.get(nextPageUrl);
+      allComments.push(...response.data.comments);
+
+      nextPageUrl = response.data.next_page;
+      if (nextPageUrl) {
+        nextPageUrl = nextPageUrl.replace(this.axiosInstance.defaults.baseURL || '', '');
+      }
+    }
+
+    return {
+      comments: allComments,
+      count: allComments.length,
+    };
+  }
+
+  async searchArticles(query: string, locale: string = "ja") {
+    try {
+      // ヘルプセンター記事を検索
+      const response = await this.axiosInstance.get("/help_center/articles/search.json", {
+        params: {
+          query,
+          locale,
+        },
+      });
+
+      const results = response.data.results || [];
+
+      if (results.length === 0) {
+        return {
+          results: [],
+          count: 0,
+          page: 1,
+          page_count: 0,
+          message: "検索結果が見つかりませんでした",
+        };
+      }
+
+      // 記事の詳細を取得（本文を含む）＋公開記事のみフィルタリング
+      const articlesPromises = results.slice(0, 10).map(async (article: any) => {
+        try {
+          // ロケールを含めた正しいエンドポイント
+          const detailResponse = await this.axiosInstance.get(
+            `/help_center/${locale}/articles/${article.id}.json`
+          );
+
+          const articleData = detailResponse.data.article;
+
+          // 公開されている記事のみ返す（draftでない記事）
+          if (articleData.draft === true) {
+            return null; // 下書き記事は除外
+          }
+
+          // URLをカスタムドメインに変換
+          const publicUrl = this.convertToCustomUrl(
+            article.html_url || articleData.html_url
+          );
+
+          return {
+            id: articleData.id,
+            title: article.title || articleData.title,
+            url: publicUrl,
+            snippet: article.snippet || "",
+            body: articleData.body,
+            section_id: articleData.section_id,
+            created_at: articleData.created_at,
+            updated_at: articleData.updated_at,
+            locale: articleData.locale,
+            draft: articleData.draft,
+          };
+        } catch (detailError: any) {
+          console.error(`Failed to fetch article ${article.id}:`, detailError.message);
+          // 詳細取得に失敗した場合はnullを返す（フィルタで除外される）
+          return null;
+        }
+      });
+
+      const articlesWithDetails = await Promise.all(articlesPromises);
+
+      // nullを除外（公開されていない記事や取得失敗）
+      const publicArticles = articlesWithDetails.filter(article => article !== null);
+
+      if (publicArticles.length === 0) {
+        return {
+          results: [],
+          count: 0,
+          page: 1,
+          page_count: 0,
+          message: "公開されている記事が見つかりませんでした",
+        };
+      }
+
+      return {
+        results: publicArticles.slice(0, 5), // 最大5件に制限
+        count: publicArticles.length,
+        page: response.data.page || 1,
+        page_count: response.data.page_count || 1,
+      };
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.message || "不明なエラー";
+      const errorStatus = error.response?.status;
+
+      console.error("Help Center search error:", {
+        message: errorMessage,
+        status: errorStatus,
+        query,
+        locale,
+      });
+
+      // エラーの詳細を返す
+      return {
+        results: [],
+        count: 0,
+        page: 1,
+        page_count: 0,
+        error: `ヘルプセンター検索エラー: ${errorMessage} (ステータス: ${errorStatus})`,
+      };
+    }
+  }
+
+  async getArticle(articleId: number, locale: string = "ja") {
+    try {
+      const response = await this.axiosInstance.get(
+        `/help_center/${locale}/articles/${articleId}.json`
+      );
+      return {
+        article: response.data.article,
+      };
+    } catch (error: any) {
+      console.error(`Failed to fetch article ${articleId}:`, error.message);
+      throw error;
+    }
+  }
+
+  async getArticlesBySection(sectionId: number, locale: string = "ja") {
+    try {
+      const response = await this.axiosInstance.get(
+        `/help_center/${locale}/sections/${sectionId}/articles.json`
+      );
+      return {
+        articles: response.data.articles,
+        count: response.data.count,
+      };
+    } catch (error: any) {
+      console.error(`Failed to fetch articles in section ${sectionId}:`, error.message);
+      throw error;
+    }
   }
 }
 
@@ -104,6 +283,7 @@ class ZendeskClient {
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
 const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
+const ZENDESK_HELP_CENTER_URL = process.env.ZENDESK_HELP_CENTER_URL;
 
 let zendeskClient: ZendeskClient | null = null;
 
@@ -111,7 +291,8 @@ if (ZENDESK_SUBDOMAIN && ZENDESK_EMAIL && ZENDESK_API_TOKEN) {
   zendeskClient = new ZendeskClient(
     ZENDESK_SUBDOMAIN,
     ZENDESK_EMAIL,
-    ZENDESK_API_TOKEN
+    ZENDESK_API_TOKEN,
+    ZENDESK_HELP_CENTER_URL
   );
 }
 
@@ -130,7 +311,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "get_ticket",
-    description: "Get detailed information about a specific ticket",
+    description: "Get detailed information about a specific ticket including ALL comment history (supports pagination to retrieve complete conversation thread)",
     inputSchema: {
       type: "object",
       properties: {
@@ -250,6 +431,63 @@ const TOOLS: Tool[] = [
       required: ["org_id"],
     },
   },
+  {
+    name: "search_articles",
+    description: "Search for Help Center articles using a query string. Use this to find relevant knowledge base articles.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query to find articles (e.g., 'CRM integration', 'CSV upload')",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the articles (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_article",
+    description: "Get detailed information about a specific Help Center article by ID",
+    inputSchema: {
+      type: "object",
+      properties: {
+        article_id: {
+          type: "number",
+          description: "The ID of the article to retrieve",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the article (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["article_id"],
+    },
+  },
+  {
+    name: "get_articles_by_section",
+    description: "Get all articles within a specific Help Center section",
+    inputSchema: {
+      type: "object",
+      properties: {
+        section_id: {
+          type: "number",
+          description: "The ID of the section",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the articles (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["section_id"],
+    },
+  },
 ];
 
 // ツール実行ハンドラー
@@ -294,6 +532,12 @@ async function executeTool(name: string, args: any) {
       return await zendeskClient.searchOrganizations(args.query);
     case "get_organization":
       return await zendeskClient.getOrganization(args.org_id);
+    case "search_articles":
+      return await zendeskClient.searchArticles(args.query, args.locale || "ja");
+    case "get_article":
+      return await zendeskClient.getArticle(args.article_id, args.locale || "ja");
+    case "get_articles_by_section":
+      return await zendeskClient.getArticlesBySection(args.section_id, args.locale || "ja");
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
