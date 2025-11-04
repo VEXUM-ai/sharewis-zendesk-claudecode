@@ -13,9 +13,11 @@ import axios, { AxiosInstance } from "axios";
 class ZendeskClient {
   private axiosInstance: AxiosInstance;
   private subdomain: string;
+  private helpCenterUrl: string | null;
 
-  constructor(subdomain: string, email: string, apiToken: string) {
+  constructor(subdomain: string, email: string, apiToken: string, helpCenterUrl?: string) {
     this.subdomain = subdomain;
+    this.helpCenterUrl = helpCenterUrl || null;
     const auth = Buffer.from(`${email}/token:${apiToken}`).toString("base64");
 
     this.axiosInstance = axios.create({
@@ -25,6 +27,16 @@ class ZendeskClient {
         "Content-Type": "application/json",
       },
     });
+  }
+
+  // Zendesk URLをカスタムHelp Center URLに変換
+  private convertToCustomUrl(zendeskUrl: string): string {
+    if (!this.helpCenterUrl) {
+      return zendeskUrl;
+    }
+    // https://subdomain.zendesk.com/hc/... を カスタムURLに置き換え
+    const urlPattern = new RegExp(`https://${this.subdomain}\\.zendesk\\.com/hc/`, 'g');
+    return zendeskUrl.replace(urlPattern, `${this.helpCenterUrl}/hc/`);
   }
 
   // チケットを検索
@@ -151,7 +163,7 @@ class ZendeskClient {
     };
   }
 
-  // ヘルプセンター記事を検索
+  // ヘルプセンター記事を検索（公開されている記事のみ）
   async searchArticles(query: string, locale: string = "ja") {
     try {
       // ヘルプセンター記事を検索
@@ -174,42 +186,63 @@ class ZendeskClient {
         };
       }
 
-      // 記事の詳細を取得（本文を含む）
-      const articlesWithDetails = await Promise.all(
-        results.slice(0, 5).map(async (article: any) => {
-          try {
-            // ロケールを含めた正しいエンドポイント
-            const detailResponse = await this.axiosInstance.get(
-              `/help_center/${locale}/articles/${article.id}.json`
-            );
-            return {
-              id: article.id,
-              title: article.title || detailResponse.data.article.title,
-              url: article.html_url || detailResponse.data.article.html_url,
-              snippet: article.snippet || "",
-              body: detailResponse.data.article.body,
-              section_id: detailResponse.data.article.section_id,
-              created_at: detailResponse.data.article.created_at,
-              updated_at: detailResponse.data.article.updated_at,
-              locale: detailResponse.data.article.locale,
-            };
-          } catch (detailError: any) {
-            console.error(`Failed to fetch article ${article.id}:`, detailError.message);
-            // 詳細取得に失敗した場合は基本情報のみ返す
-            return {
-              id: article.id,
-              title: article.title,
-              url: article.html_url,
-              snippet: article.snippet,
-              error: "詳細情報の取得に失敗しました",
-            };
+      // 記事の詳細を取得（本文を含む）＋公開記事のみフィルタリング
+      const articlesPromises = results.slice(0, 10).map(async (article: any) => {
+        try {
+          // ロケールを含めた正しいエンドポイント
+          const detailResponse = await this.axiosInstance.get(
+            `/help_center/${locale}/articles/${article.id}.json`
+          );
+
+          const articleData = detailResponse.data.article;
+
+          // 公開されている記事のみ返す（draftでない記事）
+          if (articleData.draft === true) {
+            return null; // 下書き記事は除外
           }
-        })
-      );
+
+          // URLをカスタムドメインに変換
+          const publicUrl = this.convertToCustomUrl(
+            article.html_url || articleData.html_url
+          );
+
+          return {
+            id: articleData.id,
+            title: article.title || articleData.title,
+            url: publicUrl,
+            snippet: article.snippet || "",
+            body: articleData.body,
+            section_id: articleData.section_id,
+            created_at: articleData.created_at,
+            updated_at: articleData.updated_at,
+            locale: articleData.locale,
+            draft: articleData.draft,
+          };
+        } catch (detailError: any) {
+          console.error(`Failed to fetch article ${article.id}:`, detailError.message);
+          // 詳細取得に失敗した場合はnullを返す（フィルタで除外される）
+          return null;
+        }
+      });
+
+      const articlesWithDetails = await Promise.all(articlesPromises);
+
+      // nullを除外（公開されていない記事や取得失敗）
+      const publicArticles = articlesWithDetails.filter(article => article !== null);
+
+      if (publicArticles.length === 0) {
+        return {
+          results: [],
+          count: 0,
+          page: 1,
+          page_count: 0,
+          message: "公開されている記事が見つかりませんでした",
+        };
+      }
 
       return {
-        results: articlesWithDetails,
-        count: response.data.count || results.length,
+        results: publicArticles.slice(0, 5), // 最大5件に制限
+        count: publicArticles.length,
         page: response.data.page || 1,
         page_count: response.data.page_count || 1,
       };
@@ -284,6 +317,7 @@ const server = new Server(
 const ZENDESK_SUBDOMAIN = process.env.ZENDESK_SUBDOMAIN;
 const ZENDESK_EMAIL = process.env.ZENDESK_EMAIL;
 const ZENDESK_API_TOKEN = process.env.ZENDESK_API_TOKEN;
+const ZENDESK_HELP_CENTER_URL = process.env.ZENDESK_HELP_CENTER_URL;
 
 let zendeskClient: ZendeskClient | null = null;
 
@@ -291,7 +325,8 @@ if (ZENDESK_SUBDOMAIN && ZENDESK_EMAIL && ZENDESK_API_TOKEN) {
   zendeskClient = new ZendeskClient(
     ZENDESK_SUBDOMAIN,
     ZENDESK_EMAIL,
-    ZENDESK_API_TOKEN
+    ZENDESK_API_TOKEN,
+    ZENDESK_HELP_CENTER_URL
   );
 }
 

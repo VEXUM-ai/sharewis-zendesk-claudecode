@@ -23,6 +23,17 @@ Model Context Protocol (MCP) サーバーで、ChatGPTやClaude CodeからZendes
 - **解決**: 包括的なエラーハンドリングとロギングを実装
 - **効果**: エラーが発生しても適切なメッセージを返し、一部失敗しても他の結果は取得可能
 
+### ✅ カスタムドメイン対応
+- **問題**: ZendeskのデフォルトURL（`*.zendesk.com`）が返されるが、実際のHelp Centerはカスタムドメインで公開されている
+- **解決**: 環境変数 `ZENDESK_HELP_CENTER_URL` でカスタムドメインを指定可能に
+- **効果**: 正しい公開URLが返され、リンク切れが解消される
+  - 例: `https://wisdombase.zendesk.com/hc/...` → `https://wisdombase-support.share-wis.com/hc/...`
+
+### ✅ 公開記事のみフィルタリング
+- **問題**: 下書き状態の記事も検索結果に含まれ、アクセスできないリンクが返される
+- **解決**: `draft` フィールドをチェックし、公開されている記事のみ返す
+- **効果**: すべての返却される記事が実際にアクセス可能
+
 ## 機能
 
 このMCPサーバーは、以下のZendesk操作をサポートしています：
@@ -67,9 +78,12 @@ Model Context Protocol (MCP) サーバーで、ChatGPTやClaude CodeからZendes
 
 Render.comのダッシュボードで以下の環境変数を追加：
 
-- `ZENDESK_SUBDOMAIN`: あなたのZendeskサブドメイン（例: `yourcompany`）
+- `ZENDESK_SUBDOMAIN`: あなたのZendeskサブドメイン（例: `yourcompany` または `wisdombase`）
 - `ZENDESK_EMAIL`: Zendeskアカウントのメールアドレス
 - `ZENDESK_API_TOKEN`: ZendeskのAPIトークン
+- `ZENDESK_HELP_CENTER_URL`: **(重要)** カスタムHelp Center URL（例: `https://wisdombase-support.share-wis.com`）
+  - この設定がない場合、デフォルトの `https://{subdomain}.zendesk.com` が使用されます
+  - カスタムドメインでHelp Centerを公開している場合は必ず設定してください
 - `PORT`: `3000`（Renderが自動設定）
 
 #### 3. デプロイ
@@ -185,14 +199,17 @@ ChatGPT Desktop Appの設定ファイルを編集します。
         "/path/to/zendesk-claudecode/dist/index.js"
       ],
       "env": {
-        "ZENDESK_SUBDOMAIN": "yourcompany",
+        "ZENDESK_SUBDOMAIN": "wisdombase",
         "ZENDESK_EMAIL": "your-email@example.com",
-        "ZENDESK_API_TOKEN": "your-api-token-here"
+        "ZENDESK_API_TOKEN": "your-api-token-here",
+        "ZENDESK_HELP_CENTER_URL": "https://wisdombase-support.share-wis.com"
       }
     }
   }
 }
 ```
+
+**重要:** `ZENDESK_HELP_CENTER_URL` は、カスタムドメインでHelp Centerを公開している場合に設定してください。設定することで、正しい公開URLが返されます。
 
 ### 4. ChatGPTを再起動
 
