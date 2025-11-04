@@ -39,14 +39,28 @@ class ZendeskClient {
 
   // チケットを取得（コメント履歴も含む）
   async getTicket(ticketId: number) {
-    const [ticketResponse, commentsResponse] = await Promise.all([
-      this.axiosInstance.get(`/tickets/${ticketId}.json`),
-      this.axiosInstance.get(`/tickets/${ticketId}/comments.json`)
-    ]);
+    const ticketResponse = await this.axiosInstance.get(`/tickets/${ticketId}.json`);
+
+    // 全コメントを取得（ページネーション対応）
+    const allComments: any[] = [];
+    let nextPageUrl: string | null = `/tickets/${ticketId}/comments.json?sort_order=asc`;
+
+    while (nextPageUrl) {
+      const commentsResponse: any = await this.axiosInstance.get(nextPageUrl);
+      allComments.push(...commentsResponse.data.comments);
+
+      // 次のページがあるかチェック
+      nextPageUrl = commentsResponse.data.next_page;
+      if (nextPageUrl) {
+        // 絶対URLから相対パスに変換
+        nextPageUrl = nextPageUrl.replace(this.axiosInstance.defaults.baseURL || '', '');
+      }
+    }
 
     return {
       ticket: ticketResponse.data.ticket,
-      comments: commentsResponse.data.comments,
+      comments: allComments,
+      total_comments: allComments.length,
     };
   }
 
@@ -116,37 +130,98 @@ class ZendeskClient {
     return response.data;
   }
 
-  // チケットのコメント一覧を取得
+  // チケットのコメント一覧を取得（全ページ取得）
   async getTicketComments(ticketId: number) {
-    const response = await this.axiosInstance.get(`/tickets/${ticketId}/comments.json`);
-    return response.data;
+    const allComments: any[] = [];
+    let nextPageUrl: string | null = `/tickets/${ticketId}/comments.json?sort_order=asc`;
+
+    while (nextPageUrl) {
+      const response: any = await this.axiosInstance.get(nextPageUrl);
+      allComments.push(...response.data.comments);
+
+      nextPageUrl = response.data.next_page;
+      if (nextPageUrl) {
+        nextPageUrl = nextPageUrl.replace(this.axiosInstance.defaults.baseURL || '', '');
+      }
+    }
+
+    return {
+      comments: allComments,
+      count: allComments.length,
+    };
   }
 
   // ヘルプセンター記事を検索
   async searchArticles(query: string, locale: string = "ja") {
-    const response = await this.axiosInstance.get("/help_center/articles/search.json", {
-      params: {
-        query,
-        locale,
-      },
-    });
-    return response.data;
+    try {
+      const response = await this.axiosInstance.get("/help_center/articles/search.json", {
+        params: {
+          query,
+          locale,
+        },
+      });
+
+      // 記事の詳細を取得（本文を含む）
+      const results = response.data.results || [];
+      const articlesWithDetails = await Promise.all(
+        results.slice(0, 5).map(async (article: any) => {
+          try {
+            const detailResponse = await this.axiosInstance.get(
+              `/help_center/articles/${article.id}.json`
+            );
+            return {
+              id: article.id,
+              title: article.title,
+              url: article.html_url,
+              snippet: article.snippet,
+              body: detailResponse.data.article.body,
+              section_id: detailResponse.data.article.section_id,
+              created_at: detailResponse.data.article.created_at,
+              updated_at: detailResponse.data.article.updated_at,
+            };
+          } catch (error) {
+            // 詳細取得に失敗した場合は基本情報のみ返す
+            return {
+              id: article.id,
+              title: article.title,
+              url: article.html_url,
+              snippet: article.snippet,
+            };
+          }
+        })
+      );
+
+      return {
+        results: articlesWithDetails,
+        count: response.data.count,
+        page: response.data.page,
+        page_count: response.data.page_count,
+      };
+    } catch (error) {
+      console.error("Help Center search error:", error);
+      throw error;
+    }
   }
 
   // ヘルプセンター記事を取得
   async getArticle(articleId: number, locale: string = "ja") {
     const response = await this.axiosInstance.get(
-      `/help_center/${locale}/articles/${articleId}.json`
+      `/help_center/articles/${articleId}.json`
     );
-    return response.data;
+    return {
+      article: response.data.article,
+    };
   }
 
   // ヘルプセンターのセクション内記事一覧を取得
   async getArticlesBySection(sectionId: number, locale: string = "ja") {
     const response = await this.axiosInstance.get(
-      `/help_center/${locale}/sections/${sectionId}/articles.json`
+      `/help_center/sections/${sectionId}/articles.json`
     );
-    return response.data;
+    return {
+      articles: response.data.articles,
+      count: response.data.count,
+    };
   }
 }
 
@@ -196,7 +271,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "get_ticket",
-    description: "Get detailed information about a specific Zendesk ticket by ID",
+    description: "Get detailed information about a specific Zendesk ticket by ID including ALL comment history (supports pagination to retrieve complete conversation thread)",
     inputSchema: {
       type: "object",
       properties: {

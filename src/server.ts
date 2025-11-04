@@ -38,8 +38,27 @@ class ZendeskClient {
   }
 
   async getTicket(ticketId: number) {
-    const response = await this.axiosInstance.get(`/tickets/${ticketId}.json`);
-    return response.data;
+    const ticketResponse = await this.axiosInstance.get(`/tickets/${ticketId}.json`);
+
+    // 全コメントを取得（ページネーション対応）
+    const allComments: any[] = [];
+    let nextPageUrl: string | null = `/tickets/${ticketId}/comments.json?sort_order=asc`;
+
+    while (nextPageUrl) {
+      const commentsResponse: any = await this.axiosInstance.get(nextPageUrl);
+      allComments.push(...commentsResponse.data.comments);
+
+      nextPageUrl = commentsResponse.data.next_page;
+      if (nextPageUrl) {
+        nextPageUrl = nextPageUrl.replace(this.axiosInstance.defaults.baseURL || '', '');
+      }
+    }
+
+    return {
+      ticket: ticketResponse.data.ticket,
+      comments: allComments,
+      total_comments: allComments.length,
+    };
   }
 
   async createTicket(subject: string, comment: string, priority?: string, tags?: string[]) {
@@ -95,8 +114,91 @@ class ZendeskClient {
   }
 
   async getTicketComments(ticketId: number) {
-    const response = await this.axiosInstance.get(`/tickets/${ticketId}/comments.json`);
-    return response.data;
+    const allComments: any[] = [];
+    let nextPageUrl: string | null = `/tickets/${ticketId}/comments.json?sort_order=asc`;
+
+    while (nextPageUrl) {
+      const response: any = await this.axiosInstance.get(nextPageUrl);
+      allComments.push(...response.data.comments);
+
+      nextPageUrl = response.data.next_page;
+      if (nextPageUrl) {
+        nextPageUrl = nextPageUrl.replace(this.axiosInstance.defaults.baseURL || '', '');
+      }
+    }
+
+    return {
+      comments: allComments,
+      count: allComments.length,
+    };
+  }
+
+  async searchArticles(query: string, locale: string = "ja") {
+    try {
+      const response = await this.axiosInstance.get("/help_center/articles/search.json", {
+        params: {
+          query,
+          locale,
+        },
+      });
+
+      const results = response.data.results || [];
+      const articlesWithDetails = await Promise.all(
+        results.slice(0, 5).map(async (article: any) => {
+          try {
+            const detailResponse = await this.axiosInstance.get(
+              `/help_center/articles/${article.id}.json`
+            );
+            return {
+              id: article.id,
+              title: article.title,
+              url: article.html_url,
+              snippet: article.snippet,
+              body: detailResponse.data.article.body,
+              section_id: detailResponse.data.article.section_id,
+              created_at: detailResponse.data.article.created_at,
+              updated_at: detailResponse.data.article.updated_at,
+            };
+          } catch (error) {
+            return {
+              id: article.id,
+              title: article.title,
+              url: article.html_url,
+              snippet: article.snippet,
+            };
+          }
+        })
+      );
+
+      return {
+        results: articlesWithDetails,
+        count: response.data.count,
+        page: response.data.page,
+        page_count: response.data.page_count,
+      };
+    } catch (error) {
+      console.error("Help Center search error:", error);
+      throw error;
+    }
+  }
+
+  async getArticle(articleId: number, locale: string = "ja") {
+    const response = await this.axiosInstance.get(
+      `/help_center/articles/${articleId}.json`
+    );
+    return {
+      article: response.data.article,
+    };
+  }
+
+  async getArticlesBySection(sectionId: number, locale: string = "ja") {
+    const response = await this.axiosInstance.get(
+      `/help_center/sections/${sectionId}/articles.json`
+    );
+    return {
+      articles: response.data.articles,
+      count: response.data.count,
+    };
   }
 }
 
@@ -130,7 +232,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "get_ticket",
-    description: "Get detailed information about a specific ticket",
+    description: "Get detailed information about a specific ticket including ALL comment history (supports pagination to retrieve complete conversation thread)",
     inputSchema: {
       type: "object",
       properties: {
@@ -250,6 +352,63 @@ const TOOLS: Tool[] = [
       required: ["org_id"],
     },
   },
+  {
+    name: "search_articles",
+    description: "Search for Help Center articles using a query string. Use this to find relevant knowledge base articles.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Search query to find articles (e.g., 'CRM integration', 'CSV upload')",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the articles (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_article",
+    description: "Get detailed information about a specific Help Center article by ID",
+    inputSchema: {
+      type: "object",
+      properties: {
+        article_id: {
+          type: "number",
+          description: "The ID of the article to retrieve",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the article (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["article_id"],
+    },
+  },
+  {
+    name: "get_articles_by_section",
+    description: "Get all articles within a specific Help Center section",
+    inputSchema: {
+      type: "object",
+      properties: {
+        section_id: {
+          type: "number",
+          description: "The ID of the section",
+        },
+        locale: {
+          type: "string",
+          description: "Locale for the articles (default: 'ja' for Japanese)",
+          default: "ja",
+        },
+      },
+      required: ["section_id"],
+    },
+  },
 ];
 
 // ツール実行ハンドラー
@@ -294,6 +453,12 @@ async function executeTool(name: string, args: any) {
       return await zendeskClient.searchOrganizations(args.query);
     case "get_organization":
       return await zendeskClient.getOrganization(args.org_id);
+    case "search_articles":
+      return await zendeskClient.searchArticles(args.query, args.locale || "ja");
+    case "get_article":
+      return await zendeskClient.getArticle(args.article_id, args.locale || "ja");
+    case "get_articles_by_section":
+      return await zendeskClient.getArticlesBySection(args.section_id, args.locale || "ja");
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
