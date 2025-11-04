@@ -39,14 +39,39 @@ class ZendeskClient {
     return zendeskUrl.replace(urlPattern, `${this.helpCenterUrl}/hc/`);
   }
 
-  // チケットを検索
-  async searchTickets(query: string) {
-    const response = await this.axiosInstance.get("/search.json", {
-      params: {
-        query: `type:ticket ${query}`,
-      },
-    });
-    return response.data;
+  // チケットを検索（件数制限・タイムアウト対策）
+  async searchTickets(query: string, maxResults: number = 100) {
+    try {
+      const response = await this.axiosInstance.get("/search.json", {
+        params: {
+          query: `type:ticket ${query}`,
+          per_page: Math.min(maxResults, 100), // Zendeskの最大値は100
+        },
+        timeout: 30000, // 30秒タイムアウト
+      });
+
+      // 結果を制限件数まで切り詰める
+      const results = response.data.results || [];
+      const limitedResults = results.slice(0, maxResults);
+
+      return {
+        results: limitedResults,
+        count: limitedResults.length,
+        total_count: response.data.count || 0,
+        next_page: response.data.next_page || null,
+        limited: limitedResults.length < (response.data.count || 0),
+      };
+    } catch (error: any) {
+      if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+        return {
+          results: [],
+          count: 0,
+          total_count: 0,
+          error: "検索がタイムアウトしました。検索条件を絞り込んでください。",
+        };
+      }
+      throw error;
+    }
   }
 
   // チケットを取得（コメント履歴も含む）
@@ -334,13 +359,18 @@ if (ZENDESK_SUBDOMAIN && ZENDESK_EMAIL && ZENDESK_API_TOKEN) {
 const TOOLS: Tool[] = [
   {
     name: "search_tickets",
-    description: "Search for Zendesk tickets using a query string. Query can include status, priority, tags, etc.",
+    description: "Search for Zendesk tickets using a query string. Query can include status, priority, tags, etc. Returns up to 100 results by default to prevent timeout.",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Search query (e.g., 'status:open priority:high', 'tag:urgent')",
+          description: "Search query (e.g., 'status:open priority:high', 'tag:urgent', 'ユーキャン')",
+        },
+        max_results: {
+          type: "number",
+          description: "Maximum number of results to return (default: 100, max: 100)",
+          default: 100,
         },
       },
       required: ["query"],
@@ -608,7 +638,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     switch (name) {
       case "search_tickets": {
-        const result = await zendeskClient.searchTickets(args.query as string);
+        const maxResults = (args.max_results as number) || 100;
+        const result = await zendeskClient.searchTickets(
+          args.query as string,
+          maxResults
+        );
         return {
           content: [
             {
